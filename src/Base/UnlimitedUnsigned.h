@@ -26,6 +26,7 @@
 
 #include <FCGlobal.h>
 
+#include <algorithm>
 #include <charconv>
 #include <stdexcept>
 #include <string>
@@ -229,6 +230,29 @@ public:
     {
         return !(*this <= right);
     }
+    // Same result as (*this + addend <= limit), but without building the sum as a new
+    // UnlimitedUnsigned. It does not allocate, so it is cheap enough for hot comparators.
+    bool sumLessOrEqual(const UnlimitedUnsigned& addend, const UnlimitedUnsigned& limit) const
+    {
+        const size_t count = std::max({parts.size(), addend.parts.size(), limit.parts.size()});
+        PartType carry = 0;
+        // Parts are visited from least to most significant, so the last part that differs
+        // decides the comparison.
+        bool sumIsGreater = false;
+        for (size_t i = 0; i < count; i++) {
+            PartType sumPart = partAt(i) + addend.partAt(i) + carry;
+            carry = 0;
+            if (sumPart >= maxPartPlusOne) {
+                carry = 1;
+                sumPart -= maxPartPlusOne;
+            }
+            if (sumPart != limit.partAt(i)) {
+                sumIsGreater = sumPart > limit.partAt(i);
+            }
+        }
+        // A carry out of the top part makes the sum longer than limit
+        return carry == 0 && !sumIsGreater;
+    }
     bool operator==(const UnlimitedUnsigned& right) const
     {
         return parts == right.parts;
@@ -239,6 +263,12 @@ public:
     }
 
 private:
+    // The part at index i, or 0 past the most significant part
+    PartType partAt(size_t i) const
+    {
+        return i < parts.size() ? parts[i] : 0;
+    }
+
     std::vector<PartType> parts;
 };
 }  // namespace Base

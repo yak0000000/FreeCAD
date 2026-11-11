@@ -77,10 +77,25 @@ private:
         class Comparer
         {
         public:
-            bool operator()(SpanType lhs, SpanType rhs) const
+            // The spans are taken by reference and the sum is not materialized: this is called
+            // several times per set lookup, and every copy of an IT is a heap allocation.
+            bool operator()(const SpanType& lhs, const SpanType& rhs) const
             {
                 // The equality case here is when lhs is below and directly adjacent to rhs.
-                return lhs.second + lhs.first <= rhs.first;
+                return lhs.first.sumLessOrEqual(lhs.second, rhs.first);
+            }
+            // The overloads below let lower_bound() take a bare value, so lookups do not have to
+            // build a temporary span. They give the same order as comparing with span (value, 1).
+            using is_transparent = void;
+            bool operator()(const SpanType& span, const IT& value) const
+            {
+                // span lies entirely below value
+                return span.first.sumLessOrEqual(span.second, value);
+            }
+            bool operator()(const IT& value, const SpanType& span) const
+            {
+                // value lies below span
+                return span.first > value;
             }
         };
         // spans is the set of spans. Adjacent spans are coalesced so there are always gaps between
@@ -89,12 +104,11 @@ private:
         using SpanSetIterator = typename std::set<SpanType, Comparer>::iterator;
 
     public:
-        void add(IT value)
+        void add(const IT& value)
         {
-            SpanType newSpan(value, 1);
-            // Look for the smallest entry not less than newSpan.
+            // Look for the smallest entry not less than the span (value, 1).
             // Bear in mind that overlapping spans are neither less than nor greater than ech other.
-            auto above = spans.lower_bound(newSpan);
+            auto above = spans.lower_bound(value);
             if (above != spans.end() && above->first <= value) {
                 // A span was found that includes value so there is nothing to do as it is already
                 // in the set.
@@ -119,34 +133,35 @@ private:
             }
 
             // Determine whether the span above (if any) and/or the span below (if any)
-            // are adjacent to newSpan and if so, merge them appropriately and remove the
-            // original span(s) that was/were merged, updating newSpan to be the new merged
-            // span.
+            // are adjacent to value and if so, merge them appropriately and replace the
+            // original span(s) that was/were merged with the new merged span.
+            // The new span is built only once and moved into the set, as copying it allocates.
             if (above != spans.end() && below != spans.end()
                 && above->first - below->first + 1 == below->second) {
                 // below and above have a gap of exactly one between them, and this must be value
                 // so we coalesce the two spans (and the gap) into one.
-                newSpan = SpanType(below->first, below->second + above->second + 1);
+                SpanType merged(below->first, below->second + above->second + 1);
                 spans.erase(above);
-                above = spans.erase(below);
+                spans.insert(spans.erase(below), std::move(merged));
             }
             else if (below != spans.end() && value - below->first == below->second) {
                 // value is adjacent to the end of below, so just expand below by one
-                newSpan = SpanType(below->first, below->second + 1);
-                above = spans.erase(below);
+                SpanType merged(below->first, below->second + 1);
+                spans.insert(spans.erase(below), std::move(merged));
             }
             else if (above != spans.end() && above->first - value == 1) {
                 // value is adjacent to the start of above, so just expand above down by one
-                newSpan = SpanType(above->first - 1, above->second + 1);
-                above = spans.erase(above);
+                SpanType merged(above->first - 1, above->second + 1);
+                spans.insert(spans.erase(above), std::move(merged));
             }
-            // else  value is not adjacent to any existing span, so just make anew span for it
-            spans.insert(above, newSpan);
+            else {
+                // value is not adjacent to any existing span, so just make a new span for it
+                spans.insert(above, SpanType(value, IT(1)));
+            }
         }
-        void remove(IT value)
+        void remove(const IT& value)
         {
-            SpanType newSpan(value, 1);
-            auto at = spans.lower_bound(newSpan);
+            auto at = spans.lower_bound(value);
             if (at == spans.end() || at->first > value) {
                 // The found span does not include value so there is nothing to do, as it is already
                 // not in the set.
@@ -175,9 +190,9 @@ private:
                 spans.insert(spans.insert(spans.erase(at), secondReplacement), firstReplacement);
             }
         }
-        bool contains(IT value) const
+        bool contains(const IT& value) const
         {
-            auto at = spans.lower_bound(SpanType(value, IT(1)));
+            auto at = spans.lower_bound(value);
             return at != spans.end() && at->first <= value;
         }
         bool empty() const
